@@ -43,6 +43,11 @@ module Rails
 		end
 	end
 	
+	class GemDependency
+		def self.add_frozen_gem_path
+		end
+	end
+	
 	module VERSION
 		MAJOR = 2
 		MINOR = 0

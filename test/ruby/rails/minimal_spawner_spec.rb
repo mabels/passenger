@@ -64,10 +64,10 @@ shared_examples_for "a minimal spawner" do
 		end
 	end
 	
-	it "loads application_controller.rb instead of application.rb, if the former exists" do
+	it "attempts to load application.rb if application_controller.rb doesn't exist" do
 		use_rails_stub('foobar') do |stub|
-			File.rename("#{stub.app_root}/app/controllers/application.rb",
-				"#{stub.app_root}/app/controllers/application_controller.rb")
+			File.rename("#{stub.app_root}/app/controllers/application_controller.rb",
+				"#{stub.app_root}/app/controllers/application.rb")
 			lambda { spawn_stub_application(stub).close }.should_not raise_error
 		end
 	end
