@@ -524,6 +524,20 @@ module Signal
 	end
 end
 
+module Process
+	def self.timed_waitpid(pid, max_time)
+		done = false
+		start_time = Time.now
+		while Time.now - start_time < max_time && !done
+			done = Process.waitpid(pid, Process::WNOHANG)
+			sleep 0.15 if !done
+		end
+		return !!done
+	rescue Errno::ECHILD
+		return true
+	end
+end
+
 # Ruby's implementation of UNIXSocket#recv_io and UNIXSocket#send_io
 # are broken on 64-bit FreeBSD 7 and x86_64/ppc64 OS X. So we override them
 # with our own implementation.
