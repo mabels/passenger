@@ -28,10 +28,55 @@ $LOAD_PATH.unshift("#{PASSENGER_ROOT}/ext")
 
 require 'optparse'
 require 'fileutils'
+require 'tmpdir'
 require 'phusion_passenger/platform_info'
 require 'phusion_passenger/dependencies'
 require 'phusion_passenger/abstract_installer'
 include PlatformInfo
+
+# this is missing in older ruby's 
+unless Dir.respond_to? :mktmpdir
+  class Dir
+    def self.mktmpdir(prefix_suffix=nil, tmpdir=nil)
+      case prefix_suffix
+      when nil
+        prefix = "d"
+        suffix = ""
+      when String
+        prefix = prefix_suffix
+        suffix = ""
+      when Array
+        prefix = prefix_suffix[0]
+        suffix = prefix_suffix[1]
+      else
+        raise ArgumentError, "unexpected prefix_suffix: #{prefix_suffix.inspect}"
+      end
+      tmpdir ||= Dir.tmpdir
+      t = Time.now.strftime("%Y%m%d")
+      n = nil
+      begin
+        path = "#{tmpdir}/#{prefix}#{t}-#{$$}-#{rand(0x100000000).to_s(36)}"
+        path << "-#{n}" if n
+        path << suffix
+        Dir.mkdir(path, 0700)
+      rescue Errno::EEXIST
+        n ||= 0
+        n += 1
+        retry
+      end
+  
+      if block_given?
+        begin
+          yield path
+        ensure
+          FileUtils.remove_entry_secure path
+        end
+      else
+        path
+      end
+    end
+  end
+end
 
 class Installer < PhusionPassenger::AbstractInstaller
 	include PhusionPassenger
@@ -65,44 +110,46 @@ class Installer < PhusionPassenger::AbstractInstaller
 		check_dependencies || exit(1)
 		
 		check_whether_we_can_write_to(PASSENGER_ROOT) || exit(1)
-		
-		download_and_install = should_we_download_and_install_nginx_automatically?
-		if pcre_is_installed?
-			@pcre_source_dir = nil
-		else
-			@pcre_source_dir = download_and_extract_pcre
-		end
-		if download_and_install
-			nginx_source_dir = download_and_extract_nginx
-			if nginx_source_dir.nil?
-				show_possible_solutions_for_download_and_extraction_problems
-				exit(1)
-			end
-			nginx_prefix = ask_for_nginx_install_prefix
-			if @extra_configure_flags == "none"
-				extra_nginx_configure_flags = nil
-			else
-				extra_nginx_configure_flags = @extra_configure_flags
-			end
-		else
-			nginx_source_dir = ask_for_nginx_source_dir
-			nginx_prefix = ask_for_nginx_install_prefix
-			extra_nginx_configure_flags = ask_for_extra_nginx_configure_flags(nginx_prefix)
-		end
-		check_whether_we_can_write_to(nginx_prefix) || exit(1)
-		nginx_config_already_exists_before_installing = nginx_config_exists?(nginx_prefix)
-		compile_passenger_support_files || exit(1)
-		if install_nginx(nginx_source_dir, nginx_prefix, extra_nginx_configure_flags)
-			if nginx_config_already_exists_before_installing || !locate_nginx_config_file(nginx_prefix)
-				show_passenger_config_snippets(nginx_prefix)
-			else
-				insert_passenger_config_snippets(nginx_prefix)
-			end
-			show_deployment_example
-		else
-			show_possible_solutions_for_compilation_and_installation_problems
-			exit(1)
-		end
+
+      Dir.mktmpdir('passenger') do |tmp_dir|
+    		download_and_install = should_we_download_and_install_nginx_automatically?
+    		if pcre_is_installed?
+    			@pcre_source_dir = nil
+    		else
+    			@pcre_source_dir = download_and_extract_pcre(tmp_dir)
+    		end
+    		if download_and_install
+    			nginx_source_dir = download_and_extract_nginx(tmp_dir)
+    			if nginx_source_dir.nil?
+    				show_possible_solutions_for_download_and_extraction_problems
+    				exit(1)
+    			end
+    			nginx_prefix = ask_for_nginx_install_prefix
+    			if @extra_configure_flags == "none"
+    				extra_nginx_configure_flags = nil
+    			else
+    				extra_nginx_configure_flags = @extra_configure_flags
+    			end
+    		else
+    			nginx_source_dir = ask_for_nginx_source_dir
+    			nginx_prefix = ask_for_nginx_install_prefix
+    			extra_nginx_configure_flags = ask_for_extra_nginx_configure_flags(nginx_prefix)
+    		end
+    		check_whether_we_can_write_to(nginx_prefix) || exit(1)
+    		nginx_config_already_exists_before_installing = nginx_config_exists?(nginx_prefix)
+    		compile_passenger_support_files || exit(1)
+    		if install_nginx(nginx_source_dir, nginx_prefix, extra_nginx_configure_flags)
+    			if nginx_config_already_exists_before_installing || !locate_nginx_config_file(nginx_prefix)
+    				show_passenger_config_snippets(nginx_prefix)
+    			else
+    				insert_passenger_config_snippets(nginx_prefix)
+    			end
+    			show_deployment_example
+    		else
+    			show_possible_solutions_for_compilation_and_installation_problems
+    			exit(1)
+    		end
+      end
 	end
 
 private
@@ -145,21 +192,18 @@ private
 		end
 	end
 	
-	def download_and_extract_pcre
+	def download_and_extract_pcre(tmp_dir)
 		new_screen
 		color_puts "<banner>PCRE (required by Nginx) not installed, downloading it...</banner>"
 		
 		basename = "pcre-7.8.tar.gz"
 		dirname = "pcre-7.8"
 		url = "ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/#{basename}"
-		File.unlink("/tmp/#{basename}") rescue nil
-		FileUtils.rm_rf("/tmp/#{dirname}")
-		
-		if download(url, "/tmp/#{basename}")
-			Dir.chdir("/tmp") do
+		if download(url, File.join(tmp_dir, basename))
+			Dir.chdir(tmp_dir) do
 				color_puts "<banner>Extracting PCRE source tarball...</banner>"
 				if sh("tar", "xzvf", basename)
-					return "/tmp/#{dirname}"
+					return File.join(tmp_dir, dirname)
 				else
 					new_screen
 					render_template "nginx/pcre_could_not_be_extracted"
@@ -177,20 +221,17 @@ private
 		exit 2
 	end
 	
-	def download_and_extract_nginx
+	def download_and_extract_nginx(tmp_dir)
 		new_screen
 		color_puts "<banner>Downloading Nginx...</banner>"
 		
 		basename = "nginx-#{NGINX_VERSION}.tar.gz"
 		url = "http://sysoev.ru/nginx/#{basename}"
-		File.unlink("/tmp/#{basename}") rescue nil
-		FileUtils.rm_rf("/tmp/nginx-#{NGINX_VERSION}")
-		
-		if download(url, "/tmp/#{basename}")
-			Dir.chdir("/tmp") do
+		if download(url, File.join(tmp_dir, basename)) 
+			Dir.chdir(tmp_dir) do
 				color_puts "<banner>Extracting Nginx source tarball...</banner>"
 				if sh("tar", "xzvf", basename)
-					return "/tmp/nginx-#{NGINX_VERSION}"
+					return File.join(tmp_dir, "nginx-#{NGINX_VERSION}")
 				else
 					return nil
 				end
